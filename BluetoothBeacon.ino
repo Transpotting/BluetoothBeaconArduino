@@ -21,6 +21,8 @@ SoftwareSerial btModule(2,3);
 #define TIMEOUT_DISABLED 5000
 
 // GPS functionality
+
+// GPS simulation points and interpolation
 #define GPS_A_LAT 46.732272
 #define GPS_A_LONG 14.095801
 #define GPS_B_LAT 46.765677
@@ -60,6 +62,9 @@ void format_gps(char *line) {
   strcat(line, num);
 }
 
+/**
+ * Sends current GPS coordinates.
+ */
 void send_gps(bool bt) {
   char line[25];
   format_gps(line);
@@ -69,6 +74,9 @@ void send_gps(bool bt) {
     Serial.println(line);
 }
 
+/**
+ * Increments GPS simulation interpolation for current points.
+ */
 void interp_gps() {
   interp_step++;
   if (interp_step >= GPS_INTERP_MAX_STEP) {
@@ -85,6 +93,10 @@ void interp_gps() {
 }
 
 
+/**
+ * Random number generator for RCC crypto.
+ * (weak)
+ */
 static int RNG(uint8_t *p_dest, unsigned p_size) {
   while(p_size) {
     long v = random();
@@ -97,6 +109,10 @@ static int RNG(uint8_t *p_dest, unsigned p_size) {
 }
 
 
+/**
+ * Either generates an ECC keypair and stores it in EEPROM,
+ * or reads it from the EEPROM.
+ */
 bool generate_ecc() {
   if (EEPROM.read(EEPROM_PUBKEY_ADDR) != EEPROM_PUBKEY_SIG) {
     if (!uECC_make_key(pub, pri, curve)) {
@@ -129,6 +145,9 @@ bool generate_ecc() {
   return true;
 }
 
+/**
+ * Sends the public part of the ECC keypair.
+ */
 void send_pub(bool bt) {
   for (int i = 0; i < uECC_curve_public_key_size(curve); i++) {
     char hd[3] = {0};
@@ -144,6 +163,9 @@ void send_pub(bool bt) {
     Serial.println();
 }
 
+/**
+ * Signs a string and sends the signature.
+ */
 void sign_send(String s, bool bt) {
   uint8_t hash[32] = {0};
   uint8_t sig[64] = {0};
@@ -170,6 +192,9 @@ void sign_send(String s, bool bt) {
     Serial.println();
 }
 
+/**
+ * Arduino setup.
+ */
 void setup() {
   randomSeed(analogRead(0));
   uECC_set_rng(&RNG);
@@ -190,6 +215,9 @@ void setup() {
   digitalWrite(PIN_DISABLED, LOW);
 }
 
+/**
+ * Arduino main code.
+ */
 void loop() {
   count++;
   
