@@ -139,9 +139,6 @@ bool generate_ecc() {
     return false;
   }
 
-  Serial.print("PUB ");
-  send_pub(false);
-  
   return true;
 }
 
@@ -224,6 +221,7 @@ void loop() {
   if (btModule.available()) {
     String line = btModule.readStringUntil('\n');
     line.trim();
+    Serial.println("BT: " + line);
 
     if (line.startsWith("WTH")) {
       String cmd = line.substring(4);
@@ -249,6 +247,10 @@ void loop() {
         sign_send(param, true);
       } else if (cmd == "PUB") {
         send_pub(true);
+      } else if (cmd == "PING") {
+        btModule.println("PONG");
+      } else if (cmd == "NAME") {
+        btModule.println(BT_NAME);
       }
     }
   }
@@ -256,21 +258,36 @@ void loop() {
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     line.trim();
-    btModule.print(line);
+    if (line.startsWith("WTH")) {
+      String cmd = line.substring(4);
+      String param = "";
+      int p = cmd.indexOf(' ');
+      if (p != -1) {
+        param = cmd.substring(p + 1);
+        cmd = cmd.substring(0, p);
+      }
+      if (cmd == "NAME") {
+        Serial.println(BT_NAME);
+      } else if (cmd == "PING") {
+        Serial.println("PONG");
+      }
+    }
   }
 
-  if (count % 1000 == 0)
+  if (count % 1000 == 0) {
+    /* General "often" maintainance */
     interp_gps();
+    if (time_disabled) {
+      if (millis() - time_disabled > TIMEOUT_DISABLED) {
+        time_disabled = 0;
+        digitalWrite(PIN_DISABLED, LOW);
+      }
+    }
+  }
 
   if (count % 10000 == 0) {
     Serial.print("POS ");
     send_gps(false);
   }
   
-  if (time_disabled) {
-    if (millis() - time_disabled > TIMEOUT_DISABLED) {
-      time_disabled = 0;
-      digitalWrite(PIN_DISABLED, LOW);
-    }
-  }
 }
