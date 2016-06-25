@@ -9,12 +9,81 @@
 
 #include <SoftwareSerial.h>
 
+// Bluetooth module comm.
+SoftwareSerial btModule(2,3);
 #define BT_NAME "BUS-1070"
 
 #define EEPROM_PUBKEY_ADDR 0
 #define EEPROM_PUBKEY_SIG 0x08
 
-SoftwareSerial btModule(2,3);
+// Disabled sensor / light
+#define PIN_DISABLED 12
+#define TIMEOUT_DISABLED 5000
+
+// GPS functionality
+#define GPS_A_LAT 46.732272
+#define GPS_A_LONG 14.095801
+#define GPS_B_LAT 46.765677
+#define GPS_B_LONG 14.380072
+#define GPS_INTERP_MAX_STEP 1000
+
+float gps_lat = GPS_A_LAT;
+float gps_long = GPS_A_LONG;
+byte dir = 1; // 1 = up, 0 = down
+int interp_step = 0;
+uint32_t count = 0;
+long time_disabled = 0;
+
+// ECC cryptography
+#define CURVE_SIG_SIZE 40
+const struct uECC_Curve_t *curve = uECC_secp160r1();
+uint8_t pri[32] = {0};
+uint8_t pub[64] = {0};
+
+/**
+ * Linear interpolation between numbers s and e, with max_step steps, for the current this_step.
+ */
+float interp(float s, float e, float this_step, float max_step) {
+  return s + ((e - s) / max_step) * this_step;
+}
+
+/**
+ * Formats the current lat/long coordinates into a string of the form "LAT, LONG"
+ */
+void format_gps(char *line) {
+  line[0] = 0;
+  char num[10];
+  dtostrf(gps_lat, 0, 6, num);
+  strcat(line, num);
+  strcat(line, ", ");
+  dtostrf(gps_long, 0, 6, num);
+  strcat(line, num);
+}
+
+void send_gps(bool bt) {
+  char line[25];
+  format_gps(line);
+  if (bt)
+    btModule.println(line);
+  else
+    Serial.println(line);
+}
+
+void interp_gps() {
+  interp_step++;
+  if (interp_step >= GPS_INTERP_MAX_STEP) {
+    interp_step = 0;
+    dir = !dir;
+  }
+  if (dir == 1) {
+    gps_lat = interp(GPS_A_LAT, GPS_B_LAT, interp_step, GPS_INTERP_MAX_STEP);
+    gps_long = interp(GPS_A_LONG, GPS_B_LONG, interp_step, GPS_INTERP_MAX_STEP);
+  } else {
+    gps_lat = interp(GPS_B_LAT, GPS_A_LAT, interp_step, GPS_INTERP_MAX_STEP);
+    gps_long = interp(GPS_B_LONG, GPS_A_LONG, interp_step, GPS_INTERP_MAX_STEP);   
+  }
+}
+
 
 static int RNG(uint8_t *p_dest, unsigned p_size) {
   while(p_size) {
@@ -28,16 +97,7 @@ static int RNG(uint8_t *p_dest, unsigned p_size) {
 }
 
 
-bool GenerateECC() {
-  uint8_t pri[32] = {0};
-  uint8_t pub[64] = {0};
-  uint8_t hash[32] = {0};
-  uint8_t sig[64] = {0};
-
-  Serial.println();
-
-  const struct uECC_Curve_t *curve = uECC_secp160r1();
-
+bool generate_ecc() {
   if (EEPROM.read(EEPROM_PUBKEY_ADDR) != EEPROM_PUBKEY_SIG) {
     if (!uECC_make_key(pub, pri, curve)) {
       Serial.println("ECC make key fail");
@@ -63,30 +123,51 @@ bool GenerateECC() {
     return false;
   }
 
-  Serial.print("PUB: ");
+  Serial.print("PUB ");
+  send_pub(false);
+  
+  return true;
+}
+
+void send_pub(bool bt) {
   for (int i = 0; i < uECC_curve_public_key_size(curve); i++) {
     char hd[3] = {0};
     sprintf(hd, "%02x", pub[i]);
-    Serial.print(hd);
+    if (bt)
+      btModule.print(hd);
+    else
+      Serial.print(hd);
   }
+  if (bt)
+    btModule.println();
+  else
+    Serial.println();
+}
 
-  Serial.println();
+void sign_send(String s, bool bt) {
+  uint8_t hash[32] = {0};
+  uint8_t sig[64] = {0};
+
+  s.getBytes(hash, s.length());
   
-  memcpy(hash, pub, sizeof(hash));
   if (!uECC_sign(pri, hash, sizeof(hash), sig, curve)) {
       Serial.println("uECC_sign() failed");
-      return false;
+      return;
   }
 
-  for (int i = 0; i < 64; i++) {
+  for (int i = 0; i < CURVE_SIG_SIZE; i++) {
     char hd[3] = {0};
     sprintf(hd, "%02x", sig[i]);
-    Serial.print(hd);
+    if (bt)
+      btModule.print(hd);
+    else
+      Serial.print(hd);
   }
 
-  Serial.println();
-
-  return true;
+  if (bt)
+    btModule.println();
+  else
+    Serial.println();
 }
 
 void setup() {
@@ -100,21 +181,68 @@ void setup() {
   btModule.begin(9600);
 
   delay(100);
-  btModule.print("AT+NAME" BT_NAME);
+  btModule.println("AT+NAME" BT_NAME);
 
-  GenerateECC();
+  generate_ecc();
   
   digitalWrite(13, LOW);
+  pinMode(PIN_DISABLED, OUTPUT);
+  digitalWrite(PIN_DISABLED, LOW);
 }
 
 void loop() {
+  count++;
+  
   if (btModule.available()) {
     String line = btModule.readStringUntil('\n');
-    Serial.print(line);
+    line.trim();
+
+    if (line.startsWith("WTH")) {
+      String cmd = line.substring(4);
+      String param = "";
+      int p = cmd.indexOf(' ');
+      if (p != -1) {
+        param = cmd.substring(p + 1);
+        cmd = cmd.substring(0, p);
+      }
+      /*
+      Serial.print("CMD: '");
+      Serial.print(cmd);
+      Serial.print("' PARAM: '");
+      Serial.print(param);
+      Serial.println("'");
+      */
+      if (cmd == "POS") {
+        send_gps(true);
+      } else if (cmd == "DISABLED") {
+        time_disabled = millis();
+        digitalWrite(PIN_DISABLED, HIGH);
+      } else if (cmd == "SIGN") {
+        sign_send(param, true);
+      } else if (cmd == "PUB") {
+        send_pub(true);
+      }
+    }
   }
 
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
+    line.trim();
     btModule.print(line);
+  }
+
+  if (count % 1000 == 0)
+    interp_gps();
+
+  if (count % 10000 == 0) {
+    Serial.print("POS ");
+    send_gps(false);
+  }
+  
+  if (time_disabled) {
+    if (millis() - time_disabled > TIMEOUT_DISABLED) {
+      time_disabled = 0;
+      digitalWrite(PIN_DISABLED, LOW);
+    }
   }
 }
